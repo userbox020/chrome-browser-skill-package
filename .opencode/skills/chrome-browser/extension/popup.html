@@ -1,0 +1,39 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Chrome Browser Bridge</title>
+    <style>
+      :root { font-family: Inter, ui-sans-serif, system-ui, sans-serif; color: #172117; background: #f4f7f1; }
+      body { width: 340px; margin: 0; padding: 16px; }
+      header { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+      h1 { margin: 0; font: 650 1.18rem/1.1 Georgia, serif; }
+      #state { border-radius: 999px; padding: 4px 8px; background: #dde5d8; color: #52604e; font-size: 11px; font-weight: 800; text-transform: uppercase; }
+      #state[data-connected="true"] { background: #d7efd0; color: #245d27; }
+      p { color: #5a6756; font-size: 13px; line-height: 1.4; }
+      label { display: block; margin: 14px 0 5px; font-size: 12px; font-weight: 800; }
+      input { box-sizing: border-box; width: 100%; border: 1px solid #b4c1ae; border-radius: 8px; padding: 9px; background: white; color: #4a5547; font: 11px ui-monospace, monospace; }
+      .actions { display: flex; gap: 8px; margin-top: 9px; }
+      button { flex: 1; border: 0; border-radius: 8px; padding: 9px 10px; font-weight: 750; cursor: pointer; }
+      #pair { color: white; background: #315f2c; }
+      #open { color: #315f2c; background: #e2ebdd; }
+      #message { min-height: 18px; margin-bottom: 0; font-size: 12px; font-weight: 650; }
+      #message[data-error="true"] { color: #a12622; }
+    </style>
+  </head>
+  <body>
+    <header><h1>Browser Bridge</h1><span id="state">Checking</span></header>
+    <p>The extension retrieves its pairing URL directly from the local OpenCode bridge. No terminal copy/paste is required.</p>
+    <section id="pairing-controls">
+      <label for="pairing-value">Local pairing URL</label>
+      <input id="pairing-value" type="text" readonly>
+      <div class="actions">
+        <button id="pair" type="button" disabled>Pair now</button>
+        <button id="open" type="button">Full page</button>
+      </div>
+    </section>
+    <p id="message" role="status"></p>
+    <script src="popup.js" type="module"></script>
+  </body>
+</html>

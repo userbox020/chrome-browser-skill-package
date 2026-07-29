@@ -1,0 +1,12 @@
+{
+  "name": "chrome-browser-skill",
+  "version": "2.3.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "test": "node --test \"test/*.test.mjs\""
+  },
+  "dependencies": {
+    "ws": "^8.21.0"
+  }
+}
