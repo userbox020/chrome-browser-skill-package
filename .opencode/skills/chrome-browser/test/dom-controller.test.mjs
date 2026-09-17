@@ -19,7 +19,8 @@ test('DOM controller creates stable public refs across frames and routes actions
   const result = await controller.run(7, 'focus', snapshot.elements[1].ref);
   assert.equal(result.focused, true);
   assert.equal(result.element.ref, snapshot.elements[1].ref);
-  assert.deepEqual(scripting.calls.at(-1).target.frameIds, [4]);
+  assert.deepEqual(scripting.calls.at(-1).target.documentIds, ['child-doc-1']);
+  assert.equal(scripting.calls.at(-1).target.frameIds, undefined);
   assert.deepEqual(scripting.calls.at(-1).args[0].target, { kind: 'ref', value: 'r1' });
 });
 
@@ -56,8 +57,18 @@ test('DOM controller preserves structured locator failures', async () => {
   await assert.rejects(controller.run(7, 'focus', '#save'), error => {
     assert.equal(error.code, 'ambiguous');
     assert.equal(error.details.matchCount, 2);
+    assert.match(error.details.candidates[0].ref, /^@e[a-f0-9]+-\d+$/);
     return true;
   });
+});
+
+test('discovery limit is global across frames and reports omitted matches', async () => {
+  const controller = new DOMController(new FakeScripting());
+  const result = await controller.snapshot(7, '', false, { limit: 1 });
+  assert.equal(result.total, 2);
+  assert.equal(result.returned, 1);
+  assert.equal(result.elements.length, 1);
+  assert.equal(result.truncated, true);
 });
 
 class FakeScripting {
@@ -75,7 +86,8 @@ class FakeScripting {
         frame(4, this.childDocument, 'r1', 'Frame button'),
       ];
     }
-    const frameId = details.target.frameIds[0];
+    if (details.target.documentIds && !['root-doc', this.childDocument].includes(details.target.documentIds[0])) throw new Error('No document with id');
+    const frameId = details.target.documentIds ? (details.target.documentIds[0] === this.childDocument ? 4 : 0) : details.target.frameIds[0];
     if (this.failure) return [{ frameId, documentId: frameId === 4 ? this.childDocument : 'root-doc', result: { ok: false, error: this.failure } }];
     return [{
       frameId,

@@ -22,17 +22,23 @@ export class AccessibilityController {
     this.tabs.delete(tabId);
   }
 
-  async elements(tabId, query = '') {
+  async elements(tabId, query = '', options = {}) {
     const state = await this.state(tabId);
     await this.manager.send(tabId, 'Accessibility.enable');
     const tree = await this.manager.send(tabId, 'Accessibility.getFullAXTree');
     const needle = String(query || '').toLowerCase();
     const elements = [];
+    const limit = Math.max(1, Math.min(Number(options.limit) || 300, 300));
+    let total = 0;
     for (const node of tree.nodes || []) {
       const role = String(node.role?.value || '').toLowerCase();
       const name = String(node.name?.value || '');
       if (node.ignored || !node.backendDOMNodeId || (!INTERACTIVE_ROLES.has(role) && !node.properties?.some(property => property.name === 'focusable' && property.value?.value))) continue;
       if (needle && !`${role} ${name}`.toLowerCase().includes(needle)) continue;
+      if (options.role && role !== String(options.role).toLowerCase()) continue;
+      if (options.name != null && name !== String(options.name)) continue;
+      total++;
+      if (elements.length >= limit) continue;
       const properties = Object.fromEntries((node.properties || []).map(property => [property.name, property.value?.value]));
       const metadata = { role, name, properties };
       const ref = this.remember(state, node.backendDOMNodeId, metadata);
@@ -50,9 +56,8 @@ export class AccessibilityController {
           expanded: properties.expanded,
         },
       });
-      if (elements.length >= 300) break;
     }
-    return { total: elements.length, documentId: state.loaderId, elements };
+    return { total, returned: elements.length, truncated: total > elements.length, documentId: state.loaderId, elements };
   }
 
   async describe(tabId, ref) {
@@ -162,11 +167,12 @@ export class AccessibilityController {
         else if (wantedState === 'checked') matched = Boolean(state.checked);
         else if (wantedState === 'unchecked') matched = !state.checked;
         else if (wantedState === 'visible') { await this.box(tabId, ref); matched = true; }
-        else if (wantedState === 'hidden') { try { await this.box(tabId, ref); } catch { matched = true; } }
+        else if (wantedState === 'hidden') { try { await this.box(tabId, ref); } catch (error) { if (['hidden', 'stale'].includes(error.code)) matched = true; else throw error; } }
         if (matched) return { waited: true, state: wantedState, timeout: duration, element: described.element };
       } catch (error) {
         lastError = error;
-        if (wantedState === 'detached' && error.code === 'stale') return { waited: true, state: wantedState, timeout: duration, element: null };
+        if (['detached', 'hidden'].includes(wantedState) && error.code === 'stale') return { waited: true, state: wantedState, timeout: duration, element: null };
+        if (!['hidden', 'stale'].includes(error.code)) throw error;
       }
       await new Promise(resolve => setTimeout(resolve, 50));
     }

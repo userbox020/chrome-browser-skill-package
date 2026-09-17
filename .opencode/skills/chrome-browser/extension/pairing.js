@@ -24,8 +24,9 @@ export async function localPairingUrl(fetcher = fetch, extensionId = chrome.runt
 }
 
 export async function pairingStatus() {
-  return chrome.runtime.sendMessage({ type: 'pairing.status' }).catch(async () => {
+  const current = await chrome.runtime.sendMessage({ type: 'pairing.status' }).catch(async () => {
     const { bridgeSecret } = await chrome.storage.local.get('bridgeSecret');
-    return { paired: /^[a-f0-9]{64}$/i.test(bridgeSecret || ''), connected: false };
+    return { state: 'disconnected', paired: /^[a-f0-9]{64}$/i.test(bridgeSecret || ''), connected: false };
   });
+  return current || { state: 'disconnected', paired: false, connected: false };
 }

@@ -1,4 +1,6 @@
 import { COMMANDS } from './commands.js';
+import { VERSION, CAPABILITIES } from './version.js';
+import { connectionView } from './connection-state.js';
 import { hmacHex, randomNonce, safeEqual } from './auth.js';
 import {
   acceptDialog,
@@ -69,16 +71,34 @@ let serverAuthenticated = false;
 let reconnectImmediately = false;
 let pairingRequired = false;
 let pendingPairingUrl = null;
+let connectionState = 'connecting';
+let bridgeVersion = null;
+let proofSent = false;
 
 const selectedReady = chrome.storage.session.get('selectedTabId').then(value => {
   if (Number.isInteger(value.selectedTabId)) selectedTabId = value.selectedTabId;
 });
 
 const handlers = {
+  'system.status': async () => {
+    await selectedReady;
+    const tab = Number.isInteger(selectedTabId) ? await chrome.tabs.get(selectedTabId).catch(() => null) : null;
+    return { selectedTab: tab ? tabInfo(tab, true) : null };
+  },
+  'system.cleanup': async () => {
+    await selectedReady;
+    if (Number.isInteger(selectedTabId)) {
+      await networkController.cleanup(selectedTabId);
+      await debuggerManager.detach(selectedTabId);
+      domController.clear(selectedTabId);
+      accessibilityController.clear(selectedTabId);
+    }
+    return { cleaned: true };
+  },
   'system.context': async args => withTab(tab => args.shallow
     ? { tabId: tab.id, url: tab.url, origin: new URL(tab.url).origin, title: tab.title || '', documentId: null }
     : pageContext(tab.id)),
-  'tabs.list': async () => { await selectedReady; return listTabs(selectedTabId); },
+  'tabs.list': async args => { await selectedReady; return listTabs(selectedTabId, args); },
   'tabs.use': async args => {
     const info = await selectTab(args.tabId);
     if (Number.isInteger(selectedTabId) && selectedTabId !== info.tabId) {
@@ -92,9 +112,10 @@ const handlers = {
   },
   'tabs.info': async () => withTab(tab => tabInfo(tab, true)),
 
-  'page.snap': async () => withTab(tab => domController.snapshot(tab.id)),
-  'page.elements': async args => withTab(tab => domController.snapshot(tab.id, args.query || '', false)),
-  'page.accessibility': async args => withTab(tab => accessibilityController.elements(tab.id, args.query || '')),
+  'page.snap': async args => withTab(tab => domController.snapshot(tab.id, '', true, args)),
+  'page.elements': async args => withTab(tab => domController.snapshot(tab.id, args.query || '', false, args)),
+  'page.accessibility': async args => withTab(tab => accessibilityController.elements(tab.id, args.query || '', args)),
+  'element.inspect': async args => withTab(tab => accessibilityController.isRef(args.target) ? accessibilityController.describe(tab.id, args.target) : domController.run(tab.id, 'inspect', args.target)),
   'page.html': async args => withTab(tab => pageHtml(tab.id, args.selector)),
   'page.eval': async args => withApprovedTab(args, tab => evaluate(tab.id, args.expression, args.expectedBrowserContext)),
   'page.inspect': async () => withTab(tab => pageInspect(tab.id)),
@@ -225,24 +246,32 @@ function approvedUrl(args, fallback) {
 
 function connect() {
   if (socket && [WebSocket.CONNECTING, WebSocket.OPEN].includes(socket.readyState)) return;
-  socket = new WebSocket(BRIDGE_URL);
-  socket.onopen = () => {
+  const connection = new WebSocket(BRIDGE_URL);
+  socket = connection;
+  connectionState = 'connecting';
+  proofSent = false;
+  connection.onopen = () => {
+    if (socket !== connection) return;
     serverAuthenticated = false;
     updateActionStatus();
     clientNonce = randomNonce();
     socket.send(JSON.stringify({ type: 'hello', clientNonce }));
   };
-  socket.onmessage = event => handleMessage(event.data).catch(error => {
-    console.error('[chrome-browser] Bridge authentication failed:', error);
-    socket?.close(4004, 'Bridge authentication failed');
+  connection.onmessage = event => handleMessage(event.data, connection).catch(() => {
+    if (socket !== connection) return;
+    connectionState = 'auth-failed';
+    connection.close(4004, 'Bridge authentication failed');
   });
-  socket.onerror = () => socket?.close();
-  socket.onclose = () => {
+  connection.onerror = () => { if (socket === connection) connectionState = 'bridge-offline'; connection.close(); };
+  connection.onclose = () => {
+    if (socket !== connection) return;
     clearInterval(pingTimer);
     pingTimer = null;
     serverAuthenticated = false;
     clientNonce = null;
     socket = null;
+    proofSent = false;
+    if (['connected', 'authenticating', 'connecting'].includes(connectionState)) connectionState = 'disconnected';
     updateActionStatus();
     if (pairingRequired) return;
     const delay = reconnectImmediately ? 0 : RECONNECT_DELAY;
@@ -254,26 +283,56 @@ function connect() {
   };
 }
 
-async function handleMessage(raw) {
+async function handleMessage(raw, connection = socket) {
+  if (connection !== socket) return;
   let message;
   try { message = JSON.parse(raw); } catch { return; }
   if (message.type === 'challenge') {
     if (message.protocol !== PROTOCOL_VERSION || message.clientNonce !== clientNonce || !/^[a-f0-9]{64}$/i.test(message.serverNonce || '')) {
       throw new Error('Invalid server challenge');
     }
+    bridgeVersion = message.version || null;
+    if (bridgeVersion !== VERSION) {
+      connectionState = 'version-mismatch';
+      pairingRequired = true;
+      updateActionStatus();
+      connection.close(4003, 'Matching bridge version required');
+      return;
+    }
     const { bridgeSecret } = await chrome.storage.local.get('bridgeSecret');
+    if (connection !== socket) return;
+    const pairingUrl = typeof message.pairingUrl === 'string' && new RegExp(`^chrome-extension://${chrome.runtime.id}/pair\\.html#[a-f0-9]{64}$`, 'i').test(message.pairingUrl) ? message.pairingUrl : null;
     if (!bridgeSecret) {
-      if (typeof message.pairingUrl === 'string' && new RegExp(`^chrome-extension://${chrome.runtime.id}/pair\\.html#[a-f0-9]{64}$`, 'i').test(message.pairingUrl)) pendingPairingUrl = message.pairingUrl;
+      pendingPairingUrl = pairingUrl;
+      connectionState = 'pairing-required';
       pairingRequired = true;
       updateActionStatus();
       socket?.close(4005, 'Pairing required');
       return;
     }
     const expected = await hmacHex(bridgeSecret, `server:${clientNonce}:${message.serverNonce}`);
-    if (!safeEqual(message.proof, expected)) throw new Error('Server proof is invalid');
+    if (connection !== socket) return;
+    if (!safeEqual(message.proof, expected)) {
+      pendingPairingUrl = pairingUrl;
+      connectionState = 'auth-failed';
+      pairingRequired = true;
+      updateActionStatus();
+      connection.close(4004, 'Pairing mismatch');
+      return;
+    }
     const proof = await hmacHex(bridgeSecret, `extension:${clientNonce}:${message.serverNonce}`);
+    if (connection !== socket) return;
+    proofSent = true;
+    connectionState = 'authenticating';
+    socket.send(JSON.stringify({ type: 'ready', protocol: PROTOCOL_VERSION, version: VERSION, capabilities: CAPABILITIES, proof }));
+    updateActionStatus();
+    return;
+  }
+  if (message.type === 'authenticated' && proofSent && message.protocol === PROTOCOL_VERSION && message.version === VERSION) {
     serverAuthenticated = true;
-    socket.send(JSON.stringify({ type: 'ready', protocol: PROTOCOL_VERSION, version: chrome.runtime.getManifest().version, proof }));
+    connectionState = 'connected';
+    pairingRequired = false;
+    pendingPairingUrl = null;
     clearInterval(pingTimer);
     pingTimer = setInterval(() => send({ type: 'ping', time: Date.now() }), PING_INTERVAL);
     updateActionStatus();
@@ -318,16 +377,19 @@ function send(value) {
   if (socket?.readyState === WebSocket.OPEN) socket.send(JSON.stringify(value));
 }
 
-chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
+chrome.runtime.onMessage.addListener((message, sender, sendResponse) => {
+  if (sender.id !== chrome.runtime.id || !sender.url?.startsWith(chrome.runtime.getURL(''))) return;
   if (message?.type === 'pairing.status') {
     chrome.storage.local.get('bridgeSecret').then(({ bridgeSecret }) => {
-      sendResponse({ paired: /^[a-f0-9]{64}$/i.test(bridgeSecret || ''), connected: serverAuthenticated && socket?.readyState === WebSocket.OPEN, pairingUrl: pendingPairingUrl });
+      sendResponse({ state: connectionState, paired: /^[a-f0-9]{64}$/i.test(bridgeSecret || ''), connected: serverAuthenticated && socket?.readyState === WebSocket.OPEN, pairingUrl: pendingPairingUrl, bridgeVersion, extensionVersion: VERSION });
     });
     return true;
   }
-  if (message?.type === 'pairing.updated') {
+  if (message?.type === 'pairing.updated' || message?.type === 'pairing.retry') {
     pairingRequired = false;
     pendingPairingUrl = null;
+    connectionState = 'connecting';
+    serverAuthenticated = false;
     if (reconnectTimer) { clearTimeout(reconnectTimer); reconnectTimer = null; }
     if (socket) { reconnectImmediately = true; socket.close(4000, 'Pairing updated'); }
     else connect();
@@ -337,12 +399,12 @@ chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
 });
 
 async function updateActionStatus() {
-  const { bridgeSecret } = await chrome.storage.local.get('bridgeSecret');
-  const paired = /^[a-f0-9]{64}$/i.test(bridgeSecret || '');
-  const connected = paired && serverAuthenticated && socket?.readyState === WebSocket.OPEN;
-  await chrome.action.setBadgeBackgroundColor({ color: connected ? '#2f7d32' : paired ? '#8a6d1d' : '#8b3a34' }).catch(() => {});
-  await chrome.action.setBadgeText({ text: connected ? 'ON' : paired ? '...' : 'PAIR' }).catch(() => {});
-  await chrome.action.setTitle({ title: connected ? 'Chrome Browser Bridge: connected' : paired ? 'Chrome Browser Bridge: paired, reconnecting' : 'Chrome Browser Bridge: pairing required' }).catch(() => {});
+  const view = connectionView({ state: connectionState, pairingUrl: pendingPairingUrl });
+  await Promise.all([
+    chrome.action.setBadgeBackgroundColor({ color: view.connected ? '#2f7d32' : view.error ? '#8b3a34' : '#8a6d1d' }),
+    chrome.action.setBadgeText({ text: view.badge }),
+    chrome.action.setTitle({ title: `Chrome Browser Bridge: ${view.label}` }),
+  ]).catch(() => {});
 }
 
 function normalizeCookie(cookie) {

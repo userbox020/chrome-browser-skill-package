@@ -8,6 +8,7 @@ import test from 'node:test';
 import WebSocket from 'ws';
 import { EXTENSION_ORIGIN } from '../extension/identity.js';
 import { startServer } from '../src/server.mjs';
+import { VERSION, CAPABILITIES } from '../extension/version.js';
 
 test('server authenticates commands and enforces static and dynamic challenges', async t => {
   const temp = mkdtempSync(resolve(tmpdir(), 'chrome-browser-test-'));
@@ -80,6 +81,10 @@ test('server authenticates commands and enforces static and dynamic challenges',
   extension.on('message', raw => {
     const message = JSON.parse(raw.toString());
     if (message.type !== 'command') return;
+    if (message.cmd === 'system.status') {
+      extension.send(JSON.stringify({ type: 'result', id: message.id, ok: true, result: { selectedTab: { tabId: 7, url: contextUrl, title: 'Fixture' } } }));
+      return;
+    }
     if (message.cmd === 'system.context') {
       extension.send(JSON.stringify({ type: 'result', id: message.id, ok: true, result: { tabId: 7, url: contextUrl, origin: 'https://shop.example.test', title: 'Order for Alice', documentId: `1:${contextUrl}` } }));
       return;
@@ -122,6 +127,11 @@ test('server authenticates commands and enforces static and dynamic challenges',
 
   const healthAfter = await fetch(`${base}/health`).then(response => response.json());
   assert.equal(healthAfter.extensionConnected, true);
+  assert.equal(healthAfter.extensionVersion, VERSION);
+  const metadata = await fetch(`${base}/admin/status`, { method: 'POST', headers: { Authorization: `Bearer ${server.token}` } }).then(response => response.json());
+  assert.equal(metadata.result.selectedTab.tabId, 7);
+  assert.deepEqual(metadata.result.extensionCapabilities, CAPABILITIES);
+  assert.doesNotMatch(JSON.stringify(metadata), /token=secret|user:pass/);
 
   const normal = await command(base, server.token, { cmd: 'tabs.list', args: {} });
   assert.equal(normal.status, 200);
@@ -132,6 +142,7 @@ test('server authenticates commands and enforces static and dynamic challenges',
   structuredFailure = false;
   assert.equal(failed.status, 500);
   assert.equal(failed.body.code, 'obscured');
+  assert.equal(failed.body.error, 'Another element covers the target.');
   assert.equal(failed.body.details.matchCount, 2);
   assert.doesNotMatch(failed.body.details.targetUrl, /token=secret/);
 
@@ -226,6 +237,8 @@ test('server authenticates commands and enforces static and dynamic challenges',
   const blockerReceived = new Promise(resolve => { resolveHeldCommand = resolve; });
   const blockerResponse = command(base, server.token, { cmd: 'tabs.info', args: {} });
   await blockerReceived;
+  const busyStop = await fetch(`${base}/admin/stop`, { method: 'POST', headers: { Authorization: `Bearer ${server.token}` } });
+  assert.equal((await busyStop.json()).code, 'bridge-busy');
   const controller = new AbortController();
   const queuedFetch = fetch(`${base}/cmd`, {
     method: 'POST',
@@ -251,7 +264,8 @@ test('server authenticates commands and enforces static and dynamic challenges',
   await once(extension, 'close');
   const disconnected = await pendingResponse;
   assert.equal(disconnected.status, 500);
-  assert.match(disconnected.body.error, /^\[redacted:/);
+  assert.equal(disconnected.body.code, 'outcome-unknown');
+  assert.match(disconnected.body.next.instruction, /Do not blindly repeat/);
   assert.ok(Date.now() - disconnectStarted < 2_000);
 });
 
@@ -294,7 +308,8 @@ async function authenticate(socket, secret, protocol = 1) {
   socket.send(JSON.stringify({
     type: 'ready',
     protocol,
-    version: '2.0.0',
+    version: VERSION,
+    capabilities: CAPABILITIES,
     proof: hmac(secret, `extension:${clientNonce}:${challenge.serverNonce}`),
   }));
 }

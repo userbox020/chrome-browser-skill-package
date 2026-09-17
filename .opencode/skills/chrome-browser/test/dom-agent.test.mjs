@@ -100,11 +100,40 @@ class FakeRoot {
   constructor(elements) { this.elements = elements; }
   querySelectorAll(selector) {
     if (selector === '*') return this.elements;
+    if (selector === '#root') return this.elements.filter(element => element.innerText === 'Root action');
+    if (selector === '#missing') return [];
     return this.elements.filter(element => element.tagName === 'BUTTON');
   }
   getElementById() { return null; }
   elementFromPoint() { return this.elements[0] || null; }
 }
+
+test('discovery filters visible controls before limiting and avoids body text extraction', async t => {
+  const page = installDOM();
+  t.after(page.restore);
+  Object.defineProperty(document.body, 'innerText', { get() { throw new Error('Unnecessary body text read'); } });
+  page.rootButton.hidden = true;
+  const result = await runDomAgent({ op: 'elements', role: 'button', visible: true, limit: 1 });
+  assert.equal(result.elements.length, 1);
+  assert.equal(result.elements[0].name, 'Shadow action');
+  assert.equal(result.total, 1);
+  const named = await runDomAgent({ op: 'elements', name: 'Root action', includeHidden: true });
+  assert.equal(named.elements[0].state.visible, false);
+});
+
+test('hidden/attached/detached CSS waits work without selecting only visible elements', async t => {
+  const page = installDOM();
+  t.after(page.restore);
+  page.rootButton.hidden = true;
+  for (const state of ['hidden', 'attached']) {
+    const result = await runDomAgent({ op: 'wait', target: { kind: 'css', value: '#root' }, state, timeout: 100 });
+    assert.equal(result.waited, true);
+  }
+  for (const state of ['hidden', 'detached']) {
+    const result = await runDomAgent({ op: 'wait', target: { kind: 'css', value: '#missing' }, state, timeout: 100 });
+    assert.equal(result.waited, true);
+  }
+});
 
 class FakeElement {
   constructor({ tagName, text, shadowRoot = null }) {

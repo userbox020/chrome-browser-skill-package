@@ -1,9 +1,14 @@
 {
   "name": "chrome-browser-skill",
-  "version": "2.3.0",
+  "version": "2.4.0",
   "private": true,
   "type": "module",
+  "engines": {
+    "node": ">=22"
+  },
   "scripts": {
+    "check": "node scripts/check.mjs",
+    "package:release": "node scripts/package-release.mjs",
     "test": "node --test \"test/*.test.mjs\""
   },
   "dependencies": {

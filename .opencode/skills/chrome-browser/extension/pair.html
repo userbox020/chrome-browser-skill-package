@@ -30,7 +30,8 @@
       <p class="eyebrow">Local authentication</p>
       <h1>Pair Chrome Browser Bridge</h1>
       <p class="intro">This page requests a pairing URL directly from the local bridge. The URL stays in this Chrome profile and is used only for local authentication.</p>
-      <section>
+      <p id="state" role="status">Checking</p>
+      <section id="pairing-controls">
         <label for="pairing-value">Local pairing URL</label>
         <div class="pair-row">
           <input id="pairing-value" type="text" readonly>
@@ -38,6 +39,7 @@
         </div>
       </section>
       <p id="status" role="status">Checking pairing status...</p>
+      <button id="retry" type="button">Retry connection</button>
       <p class="hint">Treat this URL as a local secret. If automatic retrieval fails, the CLI fallback is <code>node .opencode/skills/chrome-browser/scripts/browser.mjs pair</code>.</p>
     </main>
     <script src="pair.js" type="module"></script>

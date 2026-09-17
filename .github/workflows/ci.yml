@@ -1,0 +1,70 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+    tags: ['v*']
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  test:
+    name: Node ${{ matrix.node }} / ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+        node: [22, 24]
+    defaults:
+      run:
+        working-directory: .opencode/skills/chrome-browser
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: ${{ matrix.node }}
+          cache: npm
+          cache-dependency-path: .opencode/skills/chrome-browser/package-lock.json
+      - run: npm ci
+      - run: npm run check
+      - run: npm test
+      - name: Check portable CLI help without a browser
+        run: node scripts/browser.mjs help page elements --json
+
+  package:
+    name: Clean release archive
+    needs: test
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: 22
+      - name: Build archive from the tested Git tree
+        run: node .opencode/skills/chrome-browser/scripts/package-release.mjs --output "$RUNNER_TEMP/chrome-browser-skill-package.zip"
+      - name: Validate installation from the archive
+        shell: bash
+        run: |
+          mkdir "$RUNNER_TEMP/clean-install"
+          unzip -q "$RUNNER_TEMP/chrome-browser-skill-package.zip" -d "$RUNNER_TEMP/clean-install"
+          skill="$RUNNER_TEMP/clean-install/chrome-browser-skill-package/.opencode/skills/chrome-browser"
+          test ! -d "$skill/node_modules"
+          node "$skill/scripts/browser.mjs" help --json
+          npm ci --prefix "$skill"
+          npm run check --prefix "$skill"
+          npm test --prefix "$skill"
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: chrome-browser-skill-package
+          path: |
+            ${{ runner.temp }}/chrome-browser-skill-package.zip
+            ${{ runner.temp }}/chrome-browser-skill-package.zip.sha256
+          if-no-files-found: error

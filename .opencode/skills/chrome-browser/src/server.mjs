@@ -14,6 +14,8 @@ import {
   writeServerState,
 } from './protocol.mjs';
 import { redactResult } from './redact.mjs';
+import { VERSION, CAPABILITIES } from '../extension/version.js';
+import { browserError, errorInfo } from '../extension/errors.js';
 
 const MAX_BODY_BYTES = 2 * 1024 * 1024;
 const COMMAND_TIMEOUT = 30_000;
@@ -32,14 +34,19 @@ export async function startServer(options = {}) {
   const pending = new Map();
   let extension = null;
   let extensionReady = false;
+  let extensionVersion = null;
+  let extensionCapabilities = [];
   let requestId = 0;
   let closing = false;
   let commandQueue = Promise.resolve();
+  let queuedCommands = 0;
+  let stopping = false;
 
   const enqueueCommand = operation => {
+    queuedCommands++;
     const queued = commandQueue.then(operation, operation);
     commandQueue = queued.catch(() => {});
-    return queued;
+    return queued.finally(() => { queuedCommands--; });
   };
 
   const httpServer = createServer(async (request, response) => {
@@ -54,6 +61,9 @@ export async function startServer(options = {}) {
         return sendJson(response, 200, {
           service: SERVICE,
           protocol: PROTOCOL_VERSION,
+          version: VERSION,
+          extensionVersion,
+          capabilities: CAPABILITIES,
           extensionConnected: extension?.readyState === WebSocket.OPEN && extensionReady,
         });
       }
@@ -71,7 +81,7 @@ export async function startServer(options = {}) {
         return sendJson(response, 200, { url: `${EXTENSION_ORIGIN}/pair.html#${pairingSecret}` });
       }
 
-      if (request.method !== 'POST' || request.url !== '/cmd') {
+      if (request.method !== 'POST' || !['/cmd', '/admin/status', '/admin/stop'].includes(request.url)) {
         return sendJson(response, 404, { ok: false, error: 'Not found' });
       }
       if (request.headers.origin) {
@@ -80,6 +90,27 @@ export async function startServer(options = {}) {
       if (request.headers.authorization !== `Bearer ${token}`) {
         return sendJson(response, 401, { ok: false, error: 'Unauthorized' });
       }
+
+      if (request.url === '/admin/status') {
+        let selectedTab = null;
+        if (extensionReady && extensionCapabilities.includes('diagnostics-v1') && !stopping) {
+          selectedTab = (await forward(extension, pending, ++requestId, 'system.status', {}, 2_000).catch(() => null))?.selectedTab || null;
+        }
+        return sendJson(response, 200, { ok: true, result: { bridgeVersion: VERSION, extensionVersion, extensionCapabilities, capabilities: CAPABILITIES, selectedTab: redactResult('tabs.info', selectedTab), queuedCommands } });
+      }
+      if (request.url === '/admin/stop') {
+        if (queuedCommands || stopping) throw browserError('bridge-busy');
+        stopping = true;
+        try {
+          if (extensionReady) {
+            if (!extensionCapabilities.includes('lifecycle-v1')) throw browserError('extension-outdated');
+            await forward(extension, pending, ++requestId, 'system.cleanup', {}, 5_000);
+          }
+        } catch (error) { stopping = false; throw error; }
+        response.once('finish', () => { setImmediate(() => close()); });
+        return sendJson(response, 200, { ok: true, result: { stopping: true } });
+      }
+      if (stopping) throw browserError('bridge-busy');
 
       const body = await readJsonBody(request);
       includeSensitive = body?.includeSensitive === true;
@@ -92,8 +123,9 @@ export async function startServer(options = {}) {
         const definition = getCommand(body.cmd);
         if (!definition) return sendJson(response, 400, { ok: false, error: `Unknown command: ${body.cmd}` });
         if (!extension || extension.readyState !== WebSocket.OPEN || !extensionReady) {
-          return sendJson(response, 503, { ok: false, error: 'Chrome Browser Bridge extension is not connected or has an incompatible protocol' });
+          throw browserError('extension-disconnected');
         }
+        if (body.requiredCapability && !extensionCapabilities.includes(body.requiredCapability)) throw browserError('extension-outdated');
 
         if (body.args != null && (typeof body.args !== 'object' || Array.isArray(body.args))) {
           return sendJson(response, 400, { ok: false, error: 'Command args must be a JSON object' });
@@ -110,7 +142,7 @@ export async function startServer(options = {}) {
         const staticSummary = confirmationSummary(definition, args, browserContext);
         const approval = body.confirm ? consumeChallenge(challenges, body.confirm, fingerprint) : null;
         if (body.confirm && !approval) {
-          return sendJson(response, 409, { ok: false, error: 'The confirmation challenge is invalid, expired, already used, or belongs to different arguments' });
+          return sendJson(response, 409, { ok: false, code: 'confirmation-invalid', error: errorInfo('confirmation-invalid').message });
         }
         if (staticSummary && !approval) {
           return sendJson(response, 409, createChallenge(challenges, fingerprint, staticSummary, null, browserContext, includeSensitive));
@@ -139,11 +171,13 @@ export async function startServer(options = {}) {
       const status = error.statusCode || 500;
       const rawDetails = error.details || null;
       const safe = includeSensitive ? { message: error.message || String(error), details: rawDetails } : redactResult('error', { message: error.message || String(error), details: rawDetails }, false);
+      const info = errorInfo(error.code);
       return sendJson(response, status, {
         ok: false,
-        error: safe.message,
-        code: error.code || 'bridge-error',
-        details: safe.details || undefined,
+        error: includeSensitive ? safe.message : info.message,
+        code: info.code,
+        next: info.next,
+        details: includeSensitive ? safe.details : publicErrorDetails(rawDetails),
       });
     }
   });
@@ -180,6 +214,7 @@ export async function startServer(options = {}) {
         socket.send(JSON.stringify({
           type: 'challenge',
           protocol: PROTOCOL_VERSION,
+          version: VERSION,
           clientNonce: socket.handshake.clientNonce,
           serverNonce,
           pairingUrl: `${EXTENSION_ORIGIN}/pair.html#${pairingSecret}`,
@@ -201,6 +236,9 @@ export async function startServer(options = {}) {
         clearTimeout(socket.handshakeTimer);
         extension = socket;
         extensionReady = true;
+        extensionVersion = typeof message.version === 'string' && /^\d+\.\d+\.\d+$/.test(message.version) ? message.version : null;
+        extensionCapabilities = Array.isArray(message.capabilities) ? message.capabilities.filter(value => CAPABILITIES.includes(value)) : [];
+        socket.send(JSON.stringify({ type: 'authenticated', version: VERSION, protocol: PROTOCOL_VERSION }));
         return;
       }
       if (message.type === 'ping') {
@@ -225,6 +263,8 @@ export async function startServer(options = {}) {
       if (extension === socket) {
         extension = null;
         extensionReady = false;
+        extensionVersion = null;
+        extensionCapabilities = [];
       }
     });
   });
@@ -267,12 +307,12 @@ export async function startServer(options = {}) {
   return { host, port: actualPort, token, close, httpServer, sockets };
 }
 
-function forward(extension, pending, id, cmd, args) {
+function forward(extension, pending, id, cmd, args, timeout = COMMAND_TIMEOUT) {
   return new Promise((resolve, reject) => {
     const timer = setTimeout(() => {
       pending.delete(id);
-      reject(new Error(`Timeout after ${COMMAND_TIMEOUT / 1000}s: ${cmd}`));
-    }, COMMAND_TIMEOUT);
+      reject(browserError('outcome-unknown'));
+    }, timeout);
     pending.set(id, { resolve, reject, timer, socket: extension });
     extension.send(JSON.stringify({ type: 'command', id, cmd, args }));
   });
@@ -360,6 +400,18 @@ function publicDiagnostics(diagnostics) {
   return changedFields?.length ? { changedFields } : undefined;
 }
 
+function publicErrorDetails(details) {
+  if (!details || typeof details !== 'object') return undefined;
+  const output = redactResult('error', details);
+  const publicRef = item => ({
+    ...(/^@[ea][a-f0-9]+-\d+$/.test(item?.ref || '') ? { ref: item.ref } : {}),
+    ...(Number.isInteger(item?.frameId) ? { frameId: item.frameId } : {}),
+  });
+  if (Array.isArray(details.candidates)) output.candidates = details.candidates.slice(0, 20).map(publicRef);
+  if (details.covering) output.covering = publicRef(details.covering);
+  return output;
+}
+
 function publicTarget(context, includeSensitive = false) {
   if (!context) return null;
   return redactResult('challenge-target', {
@@ -381,7 +433,7 @@ function rejectSocketOperations(pending, socket, message) {
     if (operation.socket !== socket) continue;
     pending.delete(id);
     clearTimeout(operation.timer);
-    operation.reject(new Error(message));
+    operation.reject(browserError('outcome-unknown'));
   }
 }
 

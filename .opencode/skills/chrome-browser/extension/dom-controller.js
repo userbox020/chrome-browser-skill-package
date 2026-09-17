@@ -21,8 +21,10 @@ export class DOMController {
     this.tabs.delete(tabId);
   }
 
-  async snapshot(tabId, query = '', includeText = true) {
-    const results = await this.execute(tabId, { op: includeText ? 'snapshot' : 'elements', query }, { allFrames: true });
+  async snapshot(tabId, query = '', includeText = true, options = {}) {
+    const limit = Math.max(1, Math.min(Number(options.limit) || 300, 300));
+    const target = options.frame == null ? { allFrames: true } : { frameIds: [Number(options.frame)] };
+    const results = await this.execute(tabId, { op: includeText ? 'snapshot' : 'elements', query, role: options.role, name: options.name, visible: options.visible, includeHidden: options.includeHidden, limit }, target);
     const state = this.state(tabId);
     const frames = [];
     for (const entry of results) {
@@ -36,37 +38,57 @@ export class DOMController {
         text: entry.result.text,
         textLength: entry.result.textLength,
         truncated: entry.result.truncated,
+        total: entry.result.total ?? entry.result.elements?.length ?? 0,
         elements: (entry.result.elements || []).map(element => this.decorate(state, entry, element)),
       });
     }
     frames.sort((left, right) => left.frameId - right.frameId);
     const top = frames.find(frame => frame.frameId === 0) || frames[0];
     if (!top) throw this.error('injection-failed', 'No accessible frame returned a DOM snapshot');
-    const frameSummary = frames.map(frame => ({ frameId: frame.frameId, documentId: frame.documentId, url: frame.url, title: frame.title, elementCount: frame.elements.length }));
-    if (!includeText) return { total: frames.reduce((sum, frame) => sum + frame.elements.length, 0), elements: frames.flatMap(frame => frame.elements), frames: frameSummary };
+    const frameSummary = frames.map(frame => ({ frameId: frame.frameId, documentId: frame.documentId, url: frame.url, title: frame.title, elementCount: frame.total }));
+    const elements = frames.flatMap(frame => frame.elements).slice(0, limit);
+    const total = frames.reduce((sum, frame) => sum + frame.total, 0);
+    const failedFrameCount = results.filter(entry => !entry.result?.ok).length;
+    if (!includeText) return { total, returned: elements.length, truncated: total > elements.length, elements, frames: frameSummary, ...(failedFrameCount ? { failedFrameCount } : {}) };
     return {
       title: top.title,
       url: top.url,
       text: top.text,
       textLength: top.textLength,
-      truncated: top.truncated,
-      elements: frames.flatMap(frame => frame.elements),
+      truncated: Boolean(top.truncated) || total > elements.length,
+      total,
+      returned: elements.length,
+      elements,
       frames: frameSummary,
     };
   }
 
   async run(tabId, op, target, params = {}, kind = 'css') {
     const spec = this.target(tabId, target, kind);
-    const entries = await this.execute(tabId, { op, target: spec.target, ...params }, { frameIds: [spec.frameId] });
+    let entries;
+    try {
+      entries = await this.execute(tabId, { op, target: spec.target, ...params }, spec.documentId ? { documentIds: [spec.documentId] } : { frameIds: [spec.frameId] });
+    } catch (error) {
+      if (spec.documentId && /document|frame.*removed|no frame/i.test(error.message)) {
+        this.clearStaleRef(tabId, spec.publicRef);
+        throw this.error('wrong-document', 'The target document is no longer available');
+      }
+      throw error;
+    }
     const entry = entries[0];
     if (!entry) throw this.error('injection-failed', 'Target frame did not return a result');
     if (spec.documentId && entry.documentId !== spec.documentId) {
       this.clearStaleRef(tabId, spec.publicRef);
       throw this.error('wrong-document', `Element ref belongs to an older document: ${spec.publicRef}`, { ref: spec.publicRef });
     }
-    if (!entry.result?.ok) throw this.error(entry.result?.error?.code || 'operation-failed', entry.result?.error?.message || 'DOM operation failed', entry.result?.error || {});
     const state = this.state(tabId);
     this.invalidateFrame(state, entry.frameId, entry.documentId);
+    if (!entry.result?.ok) {
+      const details = { ...(entry.result?.error || {}) };
+      if (details.candidates) details.candidates = details.candidates.map(item => this.decorate(state, entry, item));
+      if (details.covering) details.covering = this.decorate(state, entry, details.covering);
+      throw this.error(details.code || 'operation-failed', details.message || 'DOM operation failed', details);
+    }
     return this.decorateResult(state, entry, entry.result);
   }
 

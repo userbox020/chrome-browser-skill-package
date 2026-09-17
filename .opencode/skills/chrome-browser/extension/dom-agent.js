@@ -14,7 +14,9 @@ export async function runDomAgent(request = {}) {
     globalThis[REGISTRY_KEY] = registry;
   }
 
+  let discoveryRoots = null;
   const roots = () => {
+    if (discoveryRoots) return discoveryRoots;
     const values = [document];
     for (let index = 0; index < values.length; index++) {
       const root = values[index];
@@ -22,6 +24,7 @@ export async function runDomAgent(request = {}) {
         if (element.shadowRoot && !values.includes(element.shadowRoot)) values.push(element.shadowRoot);
       }
     }
+    if (request.op === 'snapshot' || request.op === 'elements') discoveryRoots = values;
     return values;
   };
   const queryAll = selector => {
@@ -312,6 +315,7 @@ export async function runDomAgent(request = {}) {
   };
   const stateMatches = (state, resolution) => {
     if (state === 'detached') return resolution.ok === false && ['not-found', 'stale'].includes(resolution.error.code);
+    if (state === 'hidden' && resolution.ok === false && ['not-found', 'stale'].includes(resolution.error.code)) return true;
     if (!resolution.ok) return false;
     const element = resolution.element;
     if (state === 'attached') return element.isConnected;
@@ -326,12 +330,17 @@ export async function runDomAgent(request = {}) {
   };
 
   if (request.op === 'snapshot' || request.op === 'elements') {
-    const text = normalize(document.body?.innerText || '');
+    const text = request.op === 'snapshot' ? normalize(document.body?.innerText || '') : '';
     let elements = interactiveElements();
     if (elements?.ok === false) return elements;
     const query = normalize(request.query).toLowerCase();
     if (query) elements = elements.filter(element => `${roleOf(element)} ${nameOf(element)} ${normalize(element.innerText || element.textContent)}`.toLowerCase().includes(query));
-    elements = elements.slice(0, MAX_ELEMENTS).map(describe);
+    if (request.role) elements = elements.filter(element => roleOf(element).toLowerCase() === normalize(request.role).toLowerCase());
+    if (request.name != null) elements = elements.filter(element => nameOf(element) === normalize(request.name));
+    if (request.visible && !request.includeHidden) elements = elements.filter(visible);
+    const total = elements.length;
+    const limit = Math.max(1, Math.min(Number(request.limit) || MAX_ELEMENTS, MAX_ELEMENTS));
+    elements = elements.slice(0, limit).map(describe);
     return {
       ok: true,
       documentKey,
@@ -339,7 +348,8 @@ export async function runDomAgent(request = {}) {
       title: document.title,
       text: request.op === 'snapshot' ? text.slice(0, MAX_TEXT) : undefined,
       textLength: request.op === 'snapshot' ? text.length : undefined,
-      truncated: request.op === 'snapshot' ? text.length > MAX_TEXT : undefined,
+      truncated: total > elements.length || (request.op === 'snapshot' && text.length > MAX_TEXT),
+      total,
       elements,
     };
   }
@@ -356,10 +366,13 @@ export async function runDomAgent(request = {}) {
     const state = String(request.state || 'visible').toLowerCase();
     if (!['attached', 'detached', 'visible', 'hidden', 'enabled', 'disabled', 'editable', 'checked', 'unchecked'].includes(state)) return failure('invalid-state', `Unsupported element state: ${state}`);
     const deadline = Date.now() + timeout;
-    let resolution = resolve(request.target);
+    const waitTarget = { ...request.target, includeHidden: true };
+    let resolution = resolve(waitTarget);
+    if (!resolution.ok && ['invalid-selector', 'invalid-target', 'ambiguous'].includes(resolution.error.code)) return resolution;
     while (!stateMatches(state, resolution) && Date.now() < deadline) {
       await new Promise(resolveDelay => setTimeout(resolveDelay, 50));
-      resolution = resolve(request.target);
+      resolution = resolve(waitTarget);
+      if (!resolution.ok && ['invalid-selector', 'invalid-target', 'ambiguous'].includes(resolution.error.code)) return resolution;
     }
     if (!stateMatches(state, resolution)) return failure('timeout', `Timed out waiting for element to become ${state}`, { timeout, state, lastError: resolution.error });
     return { ok: true, waited: true, state, timeout, element: resolution.ok ? describe(resolution.element) : null };
@@ -369,6 +382,10 @@ export async function runDomAgent(request = {}) {
   if (!resolution.ok) return resolution;
   const element = resolution.element;
   if (request.op === 'describe') return { ok: true, documentKey, element: describe(element) };
+  if (request.op === 'inspect') return {
+    ok: true, documentKey, element: describe(element),
+    ...(element.options ? { options: [...element.options].slice(0, 50).map(option => ({ label: normalize(option.textContent), selected: Boolean(option.selected), disabled: Boolean(option.disabled) })), optionsTruncated: element.options.length > 50 } : {}),
+  };
   if (request.op === 'context') return { ok: true, documentKey, element: describe(element), approvalContext: clickContext(element) };
   if (request.op === 'scroll') {
     element.scrollIntoView({ block: request.block || 'center', inline: 'center' });

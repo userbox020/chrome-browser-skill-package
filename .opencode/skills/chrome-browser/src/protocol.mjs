@@ -51,6 +51,9 @@ export async function getHealth(port = PORT, timeout = 1000) {
 
 export function requestJson(path, options = {}) {
   return new Promise((resolveRequest, rejectRequest) => {
+    let deadline;
+    const resolveOnce = value => { clearTimeout(deadline); resolveRequest(value); };
+    const rejectOnce = error => { clearTimeout(deadline); rejectRequest(error); };
     const body = options.body == null ? null : JSON.stringify(options.body);
     const operation = request({
       hostname: HOST,
@@ -60,15 +63,22 @@ export function requestJson(path, options = {}) {
       headers: { ...(options.headers || {}), ...(body ? { 'Content-Length': Buffer.byteLength(body) } : {}) },
     }, response => {
       let text = '';
+      let bytes = 0;
       response.setEncoding('utf8');
-      response.on('data', chunk => { text += chunk; });
+      response.on('data', chunk => {
+        bytes += Buffer.byteLength(chunk);
+        if (bytes > 20 * 1024 * 1024) { operation.destroy(new Error('Local bridge response exceeds the transfer limit')); return; }
+        text += chunk;
+      });
+      response.on('error', rejectOnce);
+      response.on('aborted', () => rejectOnce(new Error('Local bridge response was interrupted')));
       response.on('end', () => {
-        try { resolveRequest({ statusCode: response.statusCode || 0, body: text ? JSON.parse(text) : null }); }
-        catch (error) { rejectRequest(error); }
+        try { resolveOnce({ statusCode: response.statusCode || 0, body: text ? JSON.parse(text) : null }); }
+        catch (error) { rejectOnce(error); }
       });
     });
-    operation.setTimeout(options.timeout ?? 35_000, () => operation.destroy(new Error('Local bridge request timed out')));
-    operation.on('error', rejectRequest);
+    deadline = setTimeout(() => operation.destroy(new Error('Local bridge request timed out')), options.timeout ?? 35_000);
+    operation.on('error', rejectOnce);
     if (body) operation.write(body);
     operation.end();
   });

@@ -1,3 +1,5 @@
+import { browserError } from './errors.js';
+
 const MAX_TEXT = 5_000;
 const MAX_HTML = 2_000_000;
 
@@ -5,9 +7,12 @@ export function isInspectableUrl(url) {
   return /^https?:\/\//i.test(url || '');
 }
 
-export async function listTabs(selectedTabId) {
+export async function listTabs(selectedTabId, options = {}) {
   const tabs = await chrome.tabs.query({});
-  return tabs.map(tab => ({
+  const needle = String(options.query || '').toLowerCase();
+  const matches = tabs.filter(tab => !needle || `${tab.title || ''} ${tab.url || ''}`.toLowerCase().includes(needle));
+  const limit = options.limit == null ? matches.length : Math.max(1, Math.min(Number(options.limit) || 20, 300));
+  const result = matches.slice(0, limit).map(tab => ({
     id: tab.id,
     windowId: tab.windowId,
     active: tab.active,
@@ -16,24 +21,25 @@ export async function listTabs(selectedTabId) {
     title: tab.title || '',
     url: tab.url || '',
   }));
+  return options.limit == null && options.query == null ? result : { total: matches.length, returned: result.length, truncated: matches.length > result.length, tabs: result };
 }
 
 export async function selectTab(tabId) {
   const id = Number(tabId);
   if (!Number.isInteger(id)) throw new Error(`Invalid tab ID: ${tabId}`);
   const tab = await chrome.tabs.get(id);
-  if (!isInspectableUrl(tab.url)) throw new Error(`Tab is not an inspectable HTTP page: ${tab.url}`);
+  if (!isInspectableUrl(tab.url)) throw browserError('unsupported-page');
   await chrome.tabs.update(id, { active: true });
   await chrome.windows.update(tab.windowId, { focused: true }).catch(() => {});
   return tabInfo(tab, true);
 }
 
 export async function requireSelectedTab(tabId) {
-  if (!Number.isInteger(tabId)) throw new Error('No tab selected. Run "tabs list" and "tabs use <tabId>" first.');
+  if (!Number.isInteger(tabId)) throw browserError('no-tab-selected');
   let tab;
   try { tab = await chrome.tabs.get(tabId); }
-  catch { throw new Error('The selected tab no longer exists. Run "tabs list" again.'); }
-  if (!isInspectableUrl(tab.url)) throw new Error(`Selected tab is not an inspectable HTTP page: ${tab.url}`);
+  catch { throw browserError('tab-closed'); }
+  if (!isInspectableUrl(tab.url)) throw browserError('unsupported-page');
   return tab;
 }
 

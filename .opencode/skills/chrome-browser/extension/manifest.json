@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Chrome Browser Bridge",
-  "version": "2.3.0",
+  "version": "2.4.0",
   "minimum_chrome_version": "125",
   "description": "Local, selected-tab browser control for the OpenCode chrome-browser skill",
   "key": "MIIBIjANBgkqhkiG9w0BAQEFAAOCAQ8AMIIBCgKCAQEAtsP+AaooEaj4o57aki105D7LoIYr4Ysb4wQzilTNUIw6gE0NwDGSpGZlwGO6v9EuEidj4UV1ZBpX4YnHRg2Bjq3as3T4fs6ZGVbtlTZSpcTrO435ROMoyMsffxI9I64uoREpgRG66u0vijuivuh7KS3DaUb1MfX9wz8Q9HaA+bMrR2CQBOD6IJwyCSha8QPUYZU5+3yL3996KSG0+xJi8pPNoL9kF8YP9SEpIJVidVRh+uaZmzkpaj2vk9TaMyqQZn06jt+diYdmVS89iWf0dZetIJKaCApkBJqQ+AQLjPWCKimMvqEbg93oAnYe5CmjtL3g/Rdk/DO1AethnVFqBwIDAQAB",

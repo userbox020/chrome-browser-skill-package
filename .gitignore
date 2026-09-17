@@ -5,3 +5,5 @@ chrome-screenshot-*.png
 .env.*
 .DS_Store
 Thumbs.db
+dist/
+.slim/

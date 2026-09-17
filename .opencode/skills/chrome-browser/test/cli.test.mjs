@@ -2,20 +2,49 @@ import assert from 'node:assert/strict';
 import { fileURLToPath } from 'node:url';
 import test from 'node:test';
 import { getCommand } from '../extension/commands.js';
-import { parseArguments, takeGlobalOptions, UsageError } from '../src/cli.mjs';
+import { parseArguments, parseCommandOptions, takeGlobalOptions, UsageError } from '../src/cli.mjs';
+import { spawnSync } from 'node:child_process';
 
 test('global flags are removed without changing command arguments', () => {
   assert.deepEqual(
     takeGlobalOptions(['page', 'snap', '--json', '--include-sensitive', '--confirm', 'abc']),
-    { tokens: ['page', 'snap'], json: true, includeSensitive: true, confirm: 'abc' },
+    { tokens: ['page', 'snap'], json: true, agent: false, includeSensitive: true, confirm: 'abc' },
   );
 });
 
 test('the option terminator preserves flag-looking command values', () => {
   assert.deepEqual(
     takeGlobalOptions(['type', '--', '--include-sensitive']),
-    { tokens: ['type', '--include-sensitive'], json: false, includeSensitive: false, confirm: null },
+    { tokens: ['type', '--', '--include-sensitive'], json: false, agent: false, includeSensitive: false, confirm: null },
   );
+});
+
+test('discovery options validate and literal flag values survive both parsing layers', () => {
+  const command = getCommand('page.elements');
+  assert.deepEqual(parseCommandOptions(command, ['--role', 'textbox', '--name', 'Search', '--limit', '5', '--visible']), { tokens: [], options: { role: 'textbox', name: 'Search', limit: 5, visible: true } });
+  assert.throws(() => parseCommandOptions(command, ['--limit', '0']), UsageError);
+  assert.throws(() => parseCommandOptions(command, ['--visible', '--include-hidden']), UsageError);
+  const global = takeGlobalOptions(['page', 'elements', '--agent', '--', '--role']);
+  const parsed = parseCommandOptions(command, global.tokens.slice(2));
+  assert.deepEqual(parseArguments(command, parsed.tokens).args, { query: '--role' });
+});
+
+test('CLI prints structured usage errors on stdout in agent mode and focused JSON help without Chrome', () => {
+  const entry = fileURLToPath(new URL('../scripts/browser.mjs', import.meta.url));
+  const failed = spawnSync(process.execPath, [entry, 'tabs', 'use', 'invalid', '--agent'], { encoding: 'utf8' });
+  assert.equal(failed.status, 1);
+  assert.equal(failed.stderr, '');
+  const error = JSON.parse(failed.stdout);
+  assert.equal(error.error.code, 'usage-error');
+  assert.equal(error.schemaVersion, 1);
+  const help = spawnSync(process.execPath, [entry, 'help', 'page', 'elements', '--json'], { encoding: 'utf8' });
+  assert.equal(help.status, 0);
+  const result = JSON.parse(help.stdout);
+  assert.equal(result.commands.length, 1);
+  assert.equal(result.commands[0].options.limit, 'integer');
+  const missing = spawnSync(process.execPath, [entry, 'click', '--confirm', '--agent'], { encoding: 'utf8' });
+  assert.equal(missing.status, 1);
+  assert.equal(JSON.parse(missing.stdout).status, 'error');
 });
 
 test('rest arguments preserve space-containing interaction values', () => {

@@ -10,6 +10,7 @@ export const COMMANDS = Object.freeze([
   command('page.eval', ['page', 'eval'], 'page eval <expression>', 'Evaluate JavaScript in the page main world.', [arg('expression', 'string', false, true)], 'always'),
   command('page.inspect', ['page', 'inspect'], 'page inspect', 'Inspect forms, hidden inputs, prices, and CSRF metadata.'),
   command('page.storage', ['page', 'storage'], 'page storage', 'Read local storage, session storage, and page-visible cookies.'),
+  command('element.inspect', ['element', 'inspect'], 'element inspect <target>', 'Inspect one DOM/AX ref or CSS target without acting.', [arg('target')]),
 
   command('navigate', ['navigate'], 'navigate <url>', 'Navigate the selected tab.', [arg('url')]),
   command('open', ['open'], 'open <url>', 'Open and select a new tab.', [arg('url')]),
@@ -77,6 +78,24 @@ export const COMMANDS = Object.freeze([
   command('webmcp.call', ['webmcp', 'call'], 'webmcp call <toolName> [inputJson]', 'Invoke a WebMCP tool.', [arg('toolName'), arg('input', 'json', true, true)], 'dynamic'),
   command('webmcp.forms', ['webmcp', 'forms'], 'webmcp forms', 'List declarative WebMCP forms.'),
   command('webmcp.form', ['webmcp', 'form'], 'webmcp form <toolName>', 'Inspect one declarative WebMCP form.', [arg('toolName')]),
+]);
+
+const discoveryOptions = Object.freeze({ role: 'string', name: 'string', visible: 'boolean', 'include-hidden': 'boolean', frame: 'integer', limit: 'integer' });
+export const COMMAND_OPTIONS = Object.freeze({
+  'tabs.list': Object.freeze({ query: 'string', limit: 'integer' }),
+  'page.elements': discoveryOptions,
+  'page.snap': discoveryOptions,
+  'page.accessibility': Object.freeze({ role: 'string', name: 'string', limit: 'integer' }),
+});
+
+export const LOCAL_COMMANDS = Object.freeze([
+  command('status', ['status'], 'status', 'Read bridge, extension, versions, and selected-tab status without starting anything.'),
+  command('doctor', ['doctor'], 'doctor', 'Diagnose installation and connection problems with exact next steps.'),
+  command('server', ['server'], 'server', 'Run the bridge in the foreground.'),
+  command('server.start', ['server', 'start'], 'server start', 'Start the bridge in the background, or report the existing instance.'),
+  command('server.stop', ['server', 'stop'], 'server stop', 'Authenticate, clean up browser sessions, and stop the bridge.'),
+  command('server.restart', ['server', 'restart'], 'server restart', 'Gracefully stop this bridge and start the installed version.'),
+  command('pair', ['pair'], 'pair', 'Print a secret pairing URL as a fallback to the extension popup.'),
 ]);
 
 function command(name, path, usage, description, args = [], risk = 'none') {

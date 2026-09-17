@@ -1,5 +1,4 @@
 import { execute } from './page.js';
-import { sameContext } from './context.js';
 
 export async function listWebMcpTools(tabId) {
   return execute(tabId, async () => {
@@ -58,6 +57,13 @@ export async function getWebMcpSchema(tabId, toolName) {
 export async function callWebMcpTool(tabId, toolName, input, confirmed, approvedContext) {
   const inputJson = serializeWebMcpInput(input);
   return execute(tabId, async (name, serializedInput, approved, expectedContext) => {
+    // This callback is serialized into Chrome; imported module closures are unavailable.
+    const canonical = value => {
+      if (Array.isArray(value)) return value.map(canonical);
+      if (!value || typeof value !== 'object') return value;
+      return Object.fromEntries(Object.keys(value).sort().filter(key => value[key] !== undefined).map(key => [key, canonical(value[key])]));
+    };
+    const sameContext = (left, right) => JSON.stringify(canonical(left)) === JSON.stringify(canonical(right));
     try {
       const context = document.modelContext || navigator.modelContext;
       if (!context) return { error: 'WebMCP is not available in this tab.' };

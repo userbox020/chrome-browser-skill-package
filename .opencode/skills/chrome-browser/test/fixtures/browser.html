@@ -1,0 +1,21 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<title>Chrome Browser Bridge local fixture</title>
+<style>body { max-width: 48rem; margin: 3rem auto; font: 18px/1.5 system-ui; } button, input { padding: .6rem; margin: .5rem; } [hidden] { display: none; }</style>
+<h1>Chrome Browser Bridge local fixture</h1>
+<p>This local page has no external requests or account data.</p>
+<label for="search">Search</label><input id="search" type="text">
+<output id="echo">Empty</output>
+<p><button id="reveal" type="button">Reveal details</button></p>
+<p id="details" hidden>Details are visible</p>
+<button id="hidden-control" type="button" hidden>Hidden control</button>
+<div><button class="duplicate" type="button">Duplicate action</button><button class="duplicate" type="button">Duplicate action</button></div>
+<div id="shadow-host"></div>
+<script>
+  document.querySelector('#search').addEventListener('input', event => { document.querySelector('#echo').textContent = `Echo: ${event.target.value}`; });
+  document.querySelector('#reveal').addEventListener('click', () => { document.querySelector('#details').hidden = false; });
+  const root = document.querySelector('#shadow-host').attachShadow({ mode: 'open' });
+  root.innerHTML = '<button type="button">Shadow action</button>';
+</script>
+</html>
