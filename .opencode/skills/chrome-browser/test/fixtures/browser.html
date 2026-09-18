@@ -12,10 +12,37 @@
 <button id="hidden-control" type="button" hidden>Hidden control</button>
 <div><button class="duplicate" type="button">Duplicate action</button><button class="duplicate" type="button">Duplicate action</button></div>
 <div id="shadow-host"></div>
+<h2>Profile form</h2>
+<form id="profile">
+  <p><label for="full-name">Full name</label><input id="full-name" name="fullName" type="text"></p>
+  <p><label for="email">Email address</label><input id="email" name="email" type="email"></p>
+  <p><label for="notes">Notes</label><textarea id="notes" name="notes"></textarea></p>
+  <p><label for="topic">Topic</label><select id="topic" name="topic"><option value="">Choose a topic</option><option value="documentation">Documentation</option><option value="testing">Testing</option></select></p>
+  <p><label><input id="reminders" name="reminders" type="checkbox">Receive reminders</label></p>
+  <button type="submit">Submit demo</button>
+</form>
+<h3>Live form state</h3>
+<pre id="profile-summary" role="status"></pre>
 <script>
   document.querySelector('#search').addEventListener('input', event => { document.querySelector('#echo').textContent = `Echo: ${event.target.value}`; });
   document.querySelector('#reveal').addEventListener('click', () => { document.querySelector('#details').hidden = false; });
   const root = document.querySelector('#shadow-host').attachShadow({ mode: 'open' });
   root.innerHTML = '<button type="button">Shadow action</button>';
+  const profile = document.querySelector('#profile');
+  let submissions = 0;
+  const renderProfile = () => {
+    document.querySelector('#profile-summary').textContent = JSON.stringify({
+      fullName: profile.elements.fullName.value,
+      email: profile.elements.email.value,
+      notes: profile.elements.notes.value,
+      topic: profile.elements.topic.value,
+      reminders: profile.elements.reminders.checked,
+      submissions,
+    }, null, 2);
+  };
+  profile.addEventListener('input', renderProfile);
+  profile.addEventListener('change', renderProfile);
+  profile.addEventListener('submit', event => { event.preventDefault(); submissions++; renderProfile(); });
+  renderProfile();
 </script>
 </html>

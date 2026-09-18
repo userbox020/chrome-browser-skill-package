@@ -4,6 +4,8 @@ Install the locked `ws` dependency with `npm ci` in the skill directory, then ru
 
 GitHub CI runs these checks on Windows/Linux with Node 22/24. A packaging job builds a ZIP from the tested Git tree and repeats installation/checks/tests from that archive. Release packaging reads committed Git content, not untracked workspace files.
 
+See [the v2.4.0 usability report](usability-v2.4.0.md) for a sequential measured pass covering normal interaction, stale-ref recovery, and a multi-field form without submission. The fixture now includes a live form summary and submission counter for repeating that pass.
+
 The suite covers existing confirmation/redaction/network behavior as well as:
 
 - CLI subprocess output and exit codes, focused help, literal option values.
